@@ -1,0 +1,262 @@
+data "azurerm_user_assigned_identity" "mi-cloudops-azpolicy" {
+  name                = "mi-cloudops-azpolicy"
+  resource_group_name = "rg-cloudops-pr"
+}
+#custom policy to deploy the diagnostic settings for functionapp & logicapp standard to stream to a regional Log Analytics workspace when any webApps or functionapp which is missing this diagnostic settings is created or updated.
+resource "azurerm_policy_definition" "function_logicstd_diaglogs" {
+  name                 = "diag-logs-metrics-func-logicappstd"
+  policy_type          = "Custom"
+  mode                 = "Indexed"
+  management_group_id  = data.azurerm_management_group.tenantroot.id
+  description          = "BaringsCCP - Deploy Diagnostic Settings for functionapp, logicapp(standard) services to Log Analytics workspace"
+  display_name         = "BaringsCCP - Deploy Diagnostic Settings for functionapp, logicapp(standard) services to Log Analytics workspace"
+  
+    parameters = <<PARAMETERS
+    {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Enable or disable the execution of the policy"
+        },
+        "allowedValues": [
+          "DeployIfNotExists",
+          "Disabled"
+        ],
+        "defaultValue": "DeployIfNotExists"
+      },
+      "profileName": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Profile name",
+          "description": "The diagnostic settings profile name"
+        },
+        "defaultValue": "diag-logs-metrics-logws"
+      },
+      "logAnalytics": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Log Analytics workspace",
+          "description": "Select Log Analytics workspace from dropdown list. If this workspace is outside of the scope of the assignment you must manually grant 'Log Analytics Contributor' permissions (or similar) to the policy assignment's principal ID.",
+          "strongType": "omsWorkspace",
+          "assignPermissions": true
+        }
+      },
+      "metricsEnabled": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Enable metrics",
+          "description": "Whether to enable metrics stream to the Log Analytics workspace - True or False"
+        },
+        "allowedValues": [
+          "True",
+          "False"
+        ],
+        "defaultValue": "True"
+      },
+      "logsEnabled": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Enable logs",
+          "description": "Whether to enable logs stream to the Log Analytics workspace - True or False"
+        },
+        "allowedValues": [
+          "True",
+          "False"
+        ],
+        "defaultValue": "True"
+      }
+    }
+    PARAMETERS
+
+    policy_rule = <<POLICY_RULE
+    {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Web/sites"
+          },
+          {
+            "anyOf": [
+              {
+                "value":"[field('kind')]",
+                "Contains":"functionapp"
+              },
+              {
+                "value":"[field('kind')]",
+                "Contains":"functionapp,linux"
+              },
+              {
+                "value":"[field('kind')]",
+                "Contains":"functionapp,workflowapp"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]",
+        "details": {
+          "type": "Microsoft.Insights/diagnosticSettings",
+          "name": "[parameters('profileName')]",
+          "existenceCondition": {
+            "allOf": [
+              {
+                "field": "Microsoft.Insights/diagnosticSettings/logs.enabled",
+                "equals": "[parameters('logsEnabled')]"
+              },
+              {
+                "field": "Microsoft.Insights/diagnosticSettings/metrics.enabled",
+                "equals": "[parameters('metricsEnabled')]"
+              }
+            ]
+          },
+          "roleDefinitionIds": [
+             "/providers/microsoft.authorization/roleDefinitions/749f88d5-cbae-40b8-bcfc-e573ddc772fa",
+             "/providers/microsoft.authorization/roleDefinitions/92aaf0da-9dab-42b6-94a3-d43ce8d16293"
+            ],
+          "deployment": {
+            "properties": {
+              "mode": "incremental",
+              "template": {
+                "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                  "resourceName": {
+                    "type": "string"
+                  },
+                  "location": {
+                    "type": "string"
+                  },
+                  "logAnalytics": {
+                    "type": "string"
+                  },
+                  "metricsEnabled": {
+                    "type": "string"
+                  },
+                  "logsEnabled": {
+                    "type": "string"
+                  },
+                  "profileName": {
+                    "type": "string"
+                  }
+                },
+                "variables": {},
+                "resources": [
+                  {
+                    "type": "Microsoft.Web/sites/providers/diagnosticSettings",
+                    "apiVersion": "2017-05-01-preview",
+                    "name": "[concat(parameters('resourceName'), '/', 'Microsoft.Insights/', parameters('profileName'))]",
+                    "location": "[parameters('location')]",
+                    "dependsOn": [],
+                    "properties": {
+                      "workspaceId": "[parameters('logAnalytics')]",
+                      "metrics": [
+                        {
+                          "category": "AllMetrics",
+                          "enabled": "[parameters('metricsEnabled')]",
+                          "retentionPolicy": {
+                            "enabled": false,
+                            "days": 0
+                          }
+                        }
+                      ],
+                      "logs": [
+                        {
+                          "category": "FunctionAppLogs",
+                          "enabled": "[parameters('logsEnabled')]"
+                        }
+                      ]
+                    }
+                  }
+                ],
+                "outputs": {}
+              },
+              "parameters": {
+                "location": {
+                  "value": "[field('location')]"
+                },
+                "resourceName": {
+                  "value": "[field('name')]"
+                },
+                "logAnalytics": {
+                  "value": "[parameters('logAnalytics')]"
+                },
+                "metricsEnabled": {
+                  "value": "[parameters('metricsEnabled')]"
+                },
+                "logsEnabled": {
+                  "value": "[parameters('logsEnabled')]"
+                },
+                "profileName": {
+                  "value": "[parameters('profileName')]"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+POLICY_RULE
+}
+
+#creating azure policy assignment on management group "baringsroot"
+resource "azurerm_management_group_policy_assignment" "diag_functnapp_br" {
+  name                 = "BaringsCCP-Deploy diag"
+  display_name         = "BaringsCCP - Deploy Diagnostic Settings for functionapp, logicapp(standard) services to Log Analytics workspace"
+  policy_definition_id = azurerm_policy_definition.function_logicstd_diaglogs.id
+  management_group_id  = data.azurerm_management_group.baringsroot.id
+  
+  parameters = <<PARAMETERS
+    {
+      "profileName": {
+        "value": "diag-logs-metrics-logws"
+      },
+      "logAnalytics": {
+        "value": "/subscriptions/6bb1df60-f205-47d1-abf1-d27c18b1abfe/resourcegroups/rg-core-cloudops-prod/providers/microsoft.operationalinsights/workspaces/logws-cloudops-prod"
+      }
+    }
+  PARAMETERS
+
+ identity { 
+    type     = "UserAssigned" 
+    identity_ids = [ data.azurerm_user_assigned_identity.mi-cloudops-azpolicy.id ]
+    
+  }
+  location   = "eastus2"
+  not_scopes = [ data.azurerm_management_group.sandbox.id, ]
+
+}
+
+#creating azure policy assignment on management group "ITAdministation"
+resource "azurerm_management_group_policy_assignment" "diag_functnapp_itadm" {
+  name                 = "BaringsCCP-Deploy diag"
+  display_name         = "BaringsCCP - Deploy Diagnostic Settings for functionapp, logicapp(standard) services to Log Analytics workspace"
+  policy_definition_id = azurerm_policy_definition.function_logicstd_diaglogs.id
+  management_group_id  = data.azurerm_management_group.itadministration.id
+  
+  parameters = <<PARAMETERS
+    {
+      "profileName": {
+        "value": "diag-logs-metrics-logws"
+      },
+      "logAnalytics": {
+        "value": "/subscriptions/6bb1df60-f205-47d1-abf1-d27c18b1abfe/resourcegroups/rg-core-cloudops-prod/providers/microsoft.operationalinsights/workspaces/logws-cloudops-prod"
+      }
+    }
+  PARAMETERS
+
+ identity { 
+    type     = "UserAssigned" 
+    identity_ids = [ data.azurerm_user_assigned_identity.mi-cloudops-azpolicy.id ]
+    
+  }
+  location = "eastus2"
+  not_scopes = [
+  "/subscriptions/7c5b28f0-bba2-4a04-8a3d-9e20061803ea/resourceGroups/rg-InfraTesting-dev",
+   data.azurerm_management_group.informationtechnologydr.id, 
+   data.azurerm_subscription.baringsukdev.id,
+   data.azurerm_subscription.baringsukhub.id, 
+   data.azurerm_subscription.baringsukprod.id, ]
+  }
